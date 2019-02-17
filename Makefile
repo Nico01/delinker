@@ -10,10 +10,10 @@ OBJS = $(SRC:%.c=%.o)
 all: delinker
 
 delinker: $(SRC_UNLINKER)
-	gcc $(CFLAGS) $(SRC_UNLINKER) -ludis86 -o delinker
+	gcc $(CFLAGS) $(SRC_UNLINKER) -lcapstone -o delinker
 
 clean:
 	rm -rf $(OBJS_UNLINKER) delinker $(OBJS_OTOC) otoc
 
 tags:
-	ctags -R -f tags . /usr/local/include ~/projects/udis86/libudis86
+	ctags -R -f tags . #/usr/local/include ~/projects/udis86/libudis86

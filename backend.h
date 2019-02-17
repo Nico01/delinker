@@ -8,7 +8,7 @@ public functions for talking to backends */
 #include "ll.h"
 
 #define SECTION_FLAG_CODE 			(1<<SECTION_FLAG_SHIFT_CODE)
-#define SECTION_FLAG_INIT_DATA	(1<<SECTION_FLAG_SHIFT_INIT_DATA)
+#define SECTION_FLAG_INIT_DATA	    (1<<SECTION_FLAG_SHIFT_INIT_DATA)
 #define SECTION_FLAG_UNINIT_DATA	(1<<SECTION_FLAG_SHIFT_UNINIT_DATA)
 #define SECTION_FLAG_COMMENTS		(1<<SECTION_FLAG_SHIFT_COMMENTS)
 #define SECTION_FLAG_DISCARDABLE	(1<<SECTION_FLAG_SHIFT_DISCARDABLE)
@@ -16,7 +16,7 @@ public functions for talking to backends */
 #define SECTION_FLAG_READ			(1<<SECTION_FLAG_SHIFT_READ)
 #define SECTION_FLAG_WRITE			(1<<SECTION_FLAG_SHIFT_WRITE)
 
-#define SYMBOL_FLAG_GLOBAL 	(1<<SYMBOL_FLAG_SHIFT_GLOBAL)
+#define SYMBOL_FLAG_GLOBAL 	    (1<<SYMBOL_FLAG_SHIFT_GLOBAL)
 #define SYMBOL_FLAG_EXTERNAL 	(1<<SYMBOL_FLAG_SHIFT_EXTERNAL)
 
 typedef enum backend_type
@@ -65,13 +65,13 @@ typedef enum backend_reloc_type
 
 typedef struct backend_section
 {
-//   unsigned int index;
-   char* name;
-   unsigned int size;
-   unsigned long address;	// base address for loading this section
-   unsigned int flags; // see SECTION_FLAG_
-   char* data;
-   unsigned int alignment; // 2**x
+//  unsigned int index;
+    char* name;
+    unsigned int size;
+    unsigned long address;	// base address for loading this section
+    unsigned int flags; // see SECTION_FLAG_
+    char* data;
+    unsigned int alignment; // 2**x
 	unsigned int entry_size;
 ////// private data ///////
 	int _name;					// used to hold the index into the string table when writing
@@ -79,12 +79,12 @@ typedef struct backend_section
 
 typedef struct backend_symbol
 {
-   char* name;
-   unsigned long val;
-   backend_symbol_type type; // see SYMBOL_TYPE_
-   unsigned int flags; // see SYMBOL_FLAGS_
+    char* name;
+    unsigned long val;
+    backend_symbol_type type; // see SYMBOL_TYPE_
+    unsigned int flags; // see SYMBOL_FLAGS_
 	unsigned long size;
-   backend_section* section;
+    backend_section* section;
 } backend_symbol;
 
 typedef struct backend_reloc
@@ -101,7 +101,7 @@ typedef struct backend_reloc
 typedef struct backend_import
 {
 	char* name;
-   linked_list* symbols;
+    linked_list* symbols;
 } backend_import;
 
 typedef struct backend_object
@@ -125,9 +125,9 @@ typedef struct backend_object
 typedef struct backend_ops
 {
 	const char* (*name)(void);
-   backend_type (*format)(void);
-   backend_object* (*read)(const char* filename);
-   int (*write)(backend_object* obj, const char* filename);
+    backend_type (*format)(void);
+    backend_object* (*read)(const char* filename);
+    int (*write)(backend_object* obj, const char* filename);
 } backend_ops;
 
 // global operations

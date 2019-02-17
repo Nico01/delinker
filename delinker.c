@@ -10,7 +10,8 @@ and write out a set of unlinked .o files that can be relinked later.*/
 #include <stdio.h>
 #include <string.h>
 #include <getopt.h>
-#include <udis86.h>
+#include <stdint.h>
+#include <capstone/capstone.h>
 #include "backend.h"
 
 enum error_codes
@@ -21,7 +22,8 @@ enum error_codes
    ERR_NO_SYMS,
    ERR_NO_SYMS_AFTER_RECONSTRUCT,
    ERR_NO_TEXT_SECTION,
-   ERR_NO_PLT_SECTION
+   ERR_NO_PLT_SECTION,
+   ERR_CAPSTONE_INIT
 };
 
 static struct option options[] =
@@ -55,7 +57,8 @@ usage(void)
 static int check_function_sequence(backend_object* obj)
 {
 	unsigned long curr = 0;
-   backend_symbol* sym = backend_get_first_symbol(obj);
+    backend_symbol* sym = backend_get_first_symbol(obj);
+
 	while (sym)
 	{
 		if (sym->type == SYMBOL_TYPE_FUNCTION)
@@ -93,37 +96,50 @@ static int reconstruct_symbols(backend_object* obj, int padding)
 	char name[16];
 	unsigned int sym_addr = 0;
 	unsigned int length;
-	ud_t ud_obj;
+	csh handle;
 	int eof = 0;
 
-	ud_init(&ud_obj);
-	ud_set_mode(&ud_obj, 32); // decode in 32 bit mode
-	ud_set_input_buffer(&ud_obj, sec_text->data, sec_text->size);
-	//ud_set_syntax(&ud_obj, NULL); // #5 no disassemble!
+
+    // make sure we are using the right decoder
+	backend_type t = backend_get_type(obj);
+	if (t == OBJECT_TYPE_ELF32 || t == OBJECT_TYPE_PE32) { // decode in 32 bit mode
+        if (cs_open(CS_ARCH_X86, CS_MODE_32, &handle) != CS_ERR_OK)
+		    return -ERR_CAPSTONE_INIT;
+    }
+	else if (t == OBJECT_TYPE_ELF64) {
+        if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK)
+            return -ERR_CAPSTONE_INIT;
+    }
+	else
+		return -ERR_BAD_FORMAT;
+
+    cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
+
+    const uint8_t *code = sec_text->data;
+    size_t code_size = sec_text->size;
+    uint64_t address = sec_text->address;
+
 	sprintf(name, "fn%06X", 0);
 
-	while (length = ud_disassemble(&ud_obj))
-	{
-		enum ud_mnemonic_code mnem;
-		mnem = ud_insn_mnemonic(&ud_obj);
-		unsigned int addr = ud_insn_off(&ud_obj);
+    cs_insn *insn = cs_malloc(handle);
 
-		// did we hit the official end of the function?
-		//if (mnem == UD_Iret || mnem == UD_Ijmp)
-		if (mnem == UD_Iret)
-		{
-			eof = 1;
+    while (cs_disasm_iter(handle, &code, &code_size, &address, insn))
+    {
+        uint64_t addr = insn->address - sec_text->address;
+
+        if (cs_insn_group(handle, insn, CS_GRP_RET)) {
+            eof = 1;
 
 			// ignore any extraneous bytes after the 'ret' instruction
 			if (!padding)
 				backend_add_symbol(obj, name, sec_text->address + sym_addr, SYMBOL_TYPE_FUNCTION, addr - sym_addr, SYMBOL_FLAG_GLOBAL, sec_text);
 			continue;
-		}
+        }
 
-		// the next 'valid' instruction starts the next function
+        // the next 'valid' instruction starts the next function
 		if (eof)
 		{
-			if (mnem == UD_Iint3 || mnem == UD_Inop)
+			if (insn->id == X86_INS_INT3 || insn->id == X86_INS_NOP)
 				continue;
 			else
 			{
@@ -135,12 +151,16 @@ static int reconstruct_symbols(backend_object* obj, int padding)
 					backend_add_symbol(obj, name, sec_text->address + sym_addr, SYMBOL_TYPE_FUNCTION, addr - sym_addr, SYMBOL_FLAG_GLOBAL, sec_text);
 				//printf("Adding function length=0x%x\n", addr - sym_addr);
 
-				sprintf(name, "fn%06X", addr);
+				sprintf(name, "fn%06lX", addr);
 				sym_addr = addr;
 				//printf("Starting new function at 0x%x\n", addr);
 			}
 		}
-	}
+    }
+
+    cs_free(insn, 1);
+    cs_close(&handle);
+
 
 	// If we have reconstructed symbols and we want to be able to link again later, the linker is going to
 	// look for a symbol called 'main'. We must rename the symbol at the original entry point to be called main.
@@ -262,9 +282,8 @@ static int build_relocations(backend_object* obj)
 {
 	backend_section* sec_text;
 	backend_section* sec;
-	ud_t ud_obj;
 
-	ud_init(&ud_obj);
+    csh handle;
 
 	printf("Building relocations\n");
 
@@ -275,36 +294,41 @@ static int build_relocations(backend_object* obj)
 
 	// make sure we are using the right decoder
 	backend_type t = backend_get_type(obj);
-	if (t == OBJECT_TYPE_ELF32 || t == OBJECT_TYPE_PE32)
-		ud_set_mode(&ud_obj, 32); // decode in 32 bit mode
-	else if (t == OBJECT_TYPE_ELF64)
-		ud_set_mode(&ud_obj, 64);
+	if (t == OBJECT_TYPE_ELF32 || t == OBJECT_TYPE_PE32) { // decode in 32 bit mode
+        if (cs_open(CS_ARCH_X86, CS_MODE_32, &handle) != CS_ERR_OK)
+		    return -ERR_CAPSTONE_INIT;
+    }
+	else if (t == OBJECT_TYPE_ELF64) {
+        if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK)
+            return -ERR_CAPSTONE_INIT;
+    }
 	else
 		return -ERR_BAD_FORMAT;
 
-	unsigned bytes;
-	ud_set_input_buffer(&ud_obj, sec_text->data, sec_text->size);
+    cs_option(handle, CS_OPT_DETAIL, CS_OPT_ON);
+
+    const uint8_t *code = sec_text->data;
+    size_t code_size = sec_text->size;
+    uint64_t address = sec_text->address;
+
 	//printf("Disassembling from 0x%lx to 0x%lx\n", sec_text->address, sec_text->address + sec_text->size);
-	while (bytes = ud_disassemble(&ud_obj))
-	{
-		long val;
-		unsigned int* val_ptr=0;
-		const struct ud_operand* op;
-		enum ud_mnemonic_code mnem;
-		mnem = ud_insn_mnemonic(&ud_obj);
-		long addr = ud_insn_off(&ud_obj);
-		void* ins_data = (void*)ud_insn_ptr(&ud_obj);
-		unsigned int offset = addr + 1; // offset of the operand
-		backend_symbol *bs=NULL;
-		int opcode_size;
 
-		switch (mnem)
-		{
-  		//402345:	ff 34 85 d0 80 40 00 	pushl  0x4080d0(,%eax,4)
+    cs_insn *insn = cs_malloc(handle);
 
-		// loading a data address:  mov instruction with a 32-bit immediate
-		case UD_Imov:
-  					// 89 35 ac af 40 00    	mov    %esi,0x40afac
+    while (cs_disasm_iter(handle, &code, &code_size, &address, insn))
+    {
+        backend_symbol *bs = NULL;
+        cs_detail *d = insn->detail;
+        uint64_t offset = insn->address - sec_text->address + 1; // offset of the operand @TODO not sure
+        uint64_t imm_val = 0;
+
+        switch (insn->id) {
+        // loading a data address:  mov instruction with a 32-bit immediate
+        case X86_INS_MOV:
+        case X86_INS_MOVD:
+        case X86_INS_MOVQ:
+        case X86_INS_MOVABS:
+                    // 89 35 ac af 40 00    	mov    %esi,0x40afac
   					// 8a 88 40 80 40 00    	mov    0x408040(%eax),%cl
   					// 8b 15 34 80 40 00    	mov    0x408034,%edx
   					// a1 dc ac 40 00       	mov    0x40acdc,%eax
@@ -313,35 +337,38 @@ static int build_relocations(backend_object* obj)
   					// be 98 82 40 00       	mov    $0x408298,%esi
   					// bf a0 af 40 00       	mov    $0x40afa0,%edi
   					// c7 05 ac af 40 00 01 	movl   $0x1,0x40afac
-			//printf("Ins: %s (0x%x) len=%i\n", ud_lookup_mnemonic(mnem), *(char*)ins_data & 0xFF, bytes);
-			if (bytes == 6 && ((*(char*)ins_data & 0xFF) == 0x89 ||
-									(*(char*)ins_data & 0xFF) == 0x8a  ||
-									(*(char*)ins_data & 0xFF) == 0x8b))
-				val_ptr = (unsigned int*)(ins_data + 2);
-			else if (bytes == 5 && (*(char*)ins_data & 0xFF == 0xa1 ||
-									*(char*)ins_data & 0xFF == 0xa3  ||
-									*(char*)ins_data & 0xFF == 0xb8 ||
-									*(char*)ins_data & 0xFF == 0xbe ||
-									*(char*)ins_data & 0xFF == 0xbf))
-				val_ptr = (unsigned int*)(ins_data + 1);
-			else if (bytes == 7 && (*(char*)ins_data & 0xFF == 0xc7))
-				val_ptr = (unsigned int*)(ins_data + 2);
+            if (d->x86.op_count == 2) {
+                if (d->x86.operands[0].type == X86_OP_IMM &&
+                    (d->x86.operands[1].type == X86_OP_REG || d->x86.operands[1].type == X86_OP_MEM)) {
+                    imm_val = d->x86.operands[0].imm;
+                }
+                if ((d->x86.operands[0].type == X86_OP_REG || d->x86.operands[0].type == X86_OP_MEM) &&
+                    d->x86.operands[1].type == X86_OP_IMM) {
+                    imm_val = d->x86.operands[1].imm;
+                }
+                if (d->x86.operands[0].type == X86_OP_MEM && d->x86.operands[1].type == X86_OP_REG) {
+                    imm_val = d->x86.operands[0].mem.disp;
+                }
+                if (d->x86.operands[0].type == X86_OP_REG && d->x86.operands[1].type == X86_OP_MEM) {
+                    imm_val = d->x86.operands[1].mem.disp;
+                }
+            }
 
-			if (val_ptr)
+            if (imm_val)
 			{
-				//printf("val_ptr %p=0x%x\n", val_ptr, *val_ptr);
-				sec = backend_find_section_by_val(obj, *val_ptr);
+				//printf("imm_val = 0x%" PRIx64 "\n", imm_val);
+				sec = backend_find_section_by_val(obj, imm_val);
 				if (!sec)
 					continue;
 
-				//printf("Found mov @ 0x%lx addr:0x%x\n", sec_text->address + addr, *val_ptr); 
+				//printf("Found mov @ 0x%lx addr:0x%" PRIx64 "\n", insn->address, imm_val); 
 
-				//printf("Address 0x%lx is in section %s\n", val, sec->name);
+				//printf("Address 0x%" PRIx64 " is in section %s\n", imm_val, sec->name);
 				if (strcmp(sec->name, ".text") == 0)
 				{
-					bs = backend_find_symbol_by_val(obj, *val_ptr);
+					bs = backend_find_symbol_by_val(obj, imm_val);
 					if (!bs)
-						printf("Can't find function 0x%x\n", *val_ptr);
+						printf("Can't find function 0x%lx\n", imm_val);
 				}
 				else
 				{
@@ -360,55 +387,40 @@ static int build_relocations(backend_object* obj)
 				if (bs)
 				{
 					// add a relocation
-					//printf("Creating relocation to %s @ 0x%lx (%li)\n", bs->name, val, val - sec->address);
-					backend_add_relocation(obj, offset, RELOC_TYPE_OFFSET, *val_ptr - sec->address, bs);
+					//printf("Creating relocation to %s @ 0x%" PRIx64 " (%" PRIu64 ")\n", bs->name, imm_val, imm_val - sec->address);
+					backend_add_relocation(obj, offset, RELOC_TYPE_OFFSET, imm_val - sec->address, bs);
 				}
 				else
 				{
 					printf("can't find section symbol for %s\n", sec->name);
 				}
-				*val_ptr = 0;
+				imm_val = 0;
 			}
 			break;
 
-		case UD_Ijmp:
-					// ff 25 98 62 45 00       jmp    *0x456298
-					// e8 00 00 00 00          call   33 <fn000020+0x13>
-			if (bytes == 6 && ((*(char*)ins_data & 0xFF) == 0xFF)) 
-			{
-				val_ptr = (unsigned int*)(ins_data + 2);
-				val = *val_ptr;
-			}
-			else if (bytes == 5 && ((*(char*)ins_data & 0xFF) == 0xe8))
-			{
-				// this instruction uses a relative offset, so to get the absolute address, add the:
-				// section base address + current instruction offset + length of current instruction + call offset
-				val_ptr = (unsigned int*)(ins_data + 1);
-				val = sec_text->address + addr + bytes + *val_ptr;
-			}
-			// fall through
+        case X86_INS_JMP:
+        case X86_INS_CALL:
+            if (d->x86.op_count == 1 && d->x86.operands[0].type == X86_OP_IMM) {
+                    imm_val = d->x86.operands[0].imm;
+            }
 
-		// callq calls a function with 1 byte opcode and signed 32-bit relative offset
-		case UD_Icall:
-			//printf("Found call @ 0x%lx to 0x%lx\n", sec_text->address + addr, val); 
-
-			if (val_ptr)
+            if (imm_val)
 			{
 				// now we can look up this absolute address in the symbol table to see which static function is called
-				backend_symbol *bs = backend_find_symbol_by_val(obj, val);
+				backend_symbol *bs = backend_find_symbol_by_val(obj, imm_val);
 				if (bs)
 				{
-					//printf("Adding static reloc offset=%x sym=%s\n", offset, bs?bs->name:"none");
+					//printf("Adding static reloc offset=%lx sym=%s\n", offset, bs ? bs->name : "none");
 					backend_add_relocation(obj, offset, RELOC_TYPE_PC_RELATIVE, -4, bs);
 				}
 				else
 				{
-					sec = backend_find_section_by_val(obj, val);
+					sec = backend_find_section_by_val(obj, imm_val);
 					if (sec)
 					{
 						//printf("Address 0x%lx is in section %s\n", val, sec->name);
 
-						bs = backend_find_import_by_address(obj, val);
+						bs = backend_find_import_by_address(obj, imm_val);
 						if (bs)
 						{
 							printf("Found import symbol %s\n", bs->name);
@@ -421,12 +433,15 @@ static int build_relocations(backend_object* obj)
 						}
 					}
 				}
-				*val_ptr = 0;
+				imm_val = 0;
 			}
 
 			break;
-		}
-	}
+        }
+    }
+
+    cs_free(insn, 1);
+    cs_close(&handle);
 
 	printf("Done building relocations\n");
 }
@@ -839,6 +854,7 @@ main (int argc, char *argv[])
    input_filename = argv[optind];
 
    int ret = unlink_file(input_filename, backend_lookup_target(output_target));
+
    switch (ret)
    {
    case -ERR_BAD_FILE:
@@ -855,6 +871,9 @@ main (int argc, char *argv[])
       break;
    case -ERR_NO_TEXT_SECTION:
       printf("Can't find .text section!\n");
+      break;
+   case -ERR_CAPSTONE_INIT:
+      printf("Failed to initialize capstone engine!\n");
       break;
    }
 

@@ -8,7 +8,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
-#include <udis86.h> // X86 and X86_64 disassembler - probably should be in a separate .c file
+//#include <udis86.h> // X86 and X86_64 disassembler - probably should be in a separate .c file
 #include "backend.h"
 
 #pragma pack(1)
@@ -559,6 +559,7 @@ int elf_reloc_addend(elf_x86_64_reloc_type t)
    return 0;
 }
 
+/*
 static long decode_plt_entry(elf_machine m, const char* plt_entry)
 {
    ud_t ud_obj;
@@ -602,6 +603,7 @@ static long decode_plt_entry(elf_machine m, const char* plt_entry)
    
    return op->lval.sdword;
 }
+*/
 
 // read the section headers sequentially from the file, looking for a specific section name
 int elf64_find_section(FILE* f, const elf64_header* h, const char* name, const char* strtab, elf64_section* s)
